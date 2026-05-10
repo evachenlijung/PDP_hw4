@@ -75,40 +75,46 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     int b_stride = BLOCK_THREADS / BN;
 
     // 搬 A, B 的起始位置
-    int a_start_row = threadIdx.x / BK;
-    int a_start_col = threadIdx.x % BK;
-    int b_start_row = threadIdx.x / BN;
-    int b_start_col = threadIdx.x % BN;
+    int a_load_row = threadIdx.x / BK;
+    int a_load_col = threadIdx.x % BK;
+    int b_load_row = threadIdx.x / BN;
+    int b_load_col = threadIdx.x % BN;
+
+    int a_row_base = block_row + a_load_row;
+    int b_col_base = block_col + b_load_col;
 
     // 沿 K 方向每次處理 BK 寬的寬帶
     for(int t=0; t < CEIL_DIV(K, BK); t++){
         // 搬 A tile 進 shared memory
         for(int i=0; i<BM; i+=a_stride){
-            int global_row = block_row + a_start_row + i;
-            int global_col = BK * t + a_start_col;
-            sA[a_start_col][a_start_row + i] = 
+            int global_row = a_row_base + i;
+            int global_col = BK * t + a_load_col;
+            sA[a_load_col][a_load_row + i] = 
                 (global_row < M && global_col < K) 
                 ? A[K * global_row + global_col] : 0.0f;
         }
 
         // 搬 B tile 進 shared memory
+        int b_row_base = BK * t + b_load_row;
         for(int i=0; i<BK; i+=b_stride){
-            int global_row = BK * t + b_start_row + i;
-            int global_col = block_col + b_start_col;
-            sB[b_start_row + i][b_start_col] = 
-                (global_row < K && global_col < N) 
-                ? B[N * global_row + global_col] : 0.0f;
+            int global_row = b_row_base + i;
+            // int global_col = col_base;
+            sB[b_load_row + i][b_load_col] = 
+                (global_row < K && b_col_base < N) 
+                ? B[N * global_row + b_col_base] : 0.0f;
         }
 
         __syncthreads();
         
         // compute tile
+        int sa_col_base = TM * ty;
+        int sb_col_base = TN * tx;
         for(int k=0; k < BK; k++){
             for(int m = 0; m<TM; m++){
-                regA[m] = sA[k][TM * ty + m];
+                regA[m] = sA[k][sa_col_base + m];
             }
             for(int n = 0; n<TN; n++){
-                regB[n] = sB[k][TN * tx + n];
+                regB[n] = sB[k][sb_col_base + n];
             }
             for(int m = 0; m<TM; m++)
                 for(int n = 0; n<TN; n++)
@@ -119,71 +125,23 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     }
 
     // 結果寫回 global memory
+    int c_tile_row_base = block_row + TM * ty;
+    int c_tile_col_base = block_col + TN * tx;
     for(int m=0; m<TM; m++){
         for(int n=0; n<TN;  n++){
-            int global_row = block_row + TM * ty + m;
-            int global_col = block_col + TN * tx + n;
+            int global_row = c_tile_row_base + m;
+            int global_col = c_tile_col_base + n;
             if(global_row < M && global_col < N){
                 C[global_row * N + global_col] = 
                     alpha * C_tile[m][n] + beta * C[global_row * N + global_col];
             }
         }
     } 
-
-    // // 邊界檢查
-    // if(row >= M || col >= N) return;
-
-    // // 算內積: A[row] * B col 行
-    // float sum = 0.0f;
-    // for(int k=0; k<K; k++){
-    //     sum += A[K * row + k]*B[N * k + col];
-    // }
-
-    // // 沿 K 方向每次處理一個 TILE_SIZE 寬的寬帶
-    // float sum = 0.0f;
-    // for(int t=0; t < CEIL_DIV(K, TILE_SIZE); t++){
-    //     // 搬 A tile, B tile data
-    //     int a_col = TILE_SIZE * t + threadIdx.x;
-    //     if(a_col < K){
-    //         sA[threadIdx.y][threadIdx.x] = A[row * K + a_col];
-    //     } else {
-    //         sA[threadIdx.y][threadIdx.x] = 0.0f;
-    //     }
-
-    //     int b_row = TILE_SIZE * t + threadIdx.y;
-    //     if(b_row < K){
-    //         sB[threadIdx.y][threadIdx.x] = B[N * b_row + col];
-    //     } else {
-    //         sB[threadIdx.y][threadIdx.x] = 0.0f;
-    //     }
-
-    //     __syncthreads();
-
-    //     for(int k=0; k<TILE_SIZE; k++){
-    //         sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
-    //     }
-
-    //     __syncthreads();
-
-    // }
-
-    // // 寫回
-    // C[N * row + col] = alpha * sum + beta * C[N * row + col];
 }
 
 void runStudent(int M, int N, int K, float alpha,
                 float *A, float *B, float beta, float *C) {
     // TODO: configure grid/block dimensions and launch StudentKernel.
-
-    // Grid 大小：需要多少個 block 才能覆蓋整個 M×N 矩陣
-    // // Block 大小：每個 block 有 32×32 = 1024 個 thread
-
-    // dim3 gridDim(CEIL_DIV(N, NAIVE_BLOCK), CEIL_DIV(M, NAIVE_BLOCK));
-    // dim3 blockDim(NAIVE_BLOCK, NAIVE_BLOCK);
-    
-    // dim3 gridDim(CEIL_DIV(N, TILE_SIZE), CEIL_DIV(M, TILE_SIZE));
-    // dim3 blockDim(TILE_SIZE, TILE_SIZE);
-
     dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
     dim3 blockDim(BLOCK_THREADS);
 
