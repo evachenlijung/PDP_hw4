@@ -60,21 +60,13 @@ Running size: 4096...   avg time: 0.012475s, performance: 11017.411 GFLOPS
 
 
 
-/* hints 5+6, BK=16, vectorized write back to C*/
-[r14922112@un-ln01 hw4_skeleton]$ make clean && make && srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
-rm -f main
-nvcc -O3 -std=c++14 -gencode=arch=compute_70,code=sm_70 main.cu -o main -lcublas
-nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
-WARNING: When login node is DOWN, Your Job will FAIL!
-WARNING: Please use `sbatch` instead :)
-srun: INFO: Try to avoid using --ntasks
-srun: INFO: It is recommended to specify `--nodes` and `--ntasks-per-node` together
+/* hints 5+6, BK=16, vectorized write back to C, double the size of shared memory*/
 Using device: Tesla V100-SXM2-32GB
 Max size: 4096
 Selected kernel: 1
-Running size: 128...    avg time: 0.000040s, performance: 103.652 GFLOPS
-Running size: 256...    avg time: 0.000073s, performance: 462.388 GFLOPS
-Running size: 512...    avg time: 0.000141s, performance: 1907.837 GFLOPS
-Running size: 1024...   avg time: 0.000294s, performance: 7307.086 GFLOPS
-Running size: 2048...   avg time: 0.001923s, performance: 8935.063 GFLOPS
-Running size: 4096...   avg time: 0.011388s, performance: 12068.980 GFLOPS
+Running size: 128...    avg time: 0.000035s, performance: 118.202 GFLOPS
+Running size: 256...    avg time: 0.000064s, performance: 523.320 GFLOPS
+Running size: 512...    avg time: 0.000121s, performance: 2214.674 GFLOPS
+Running size: 1024...   avg time: 0.000243s, performance: 8840.746 GFLOPS
+Running size: 2048...   avg time: 0.001868s, performance: 9198.675 GFLOPS
+Running size: 4096...   avg time: 0.010634s, performance: 12924.218 GFLOPS
