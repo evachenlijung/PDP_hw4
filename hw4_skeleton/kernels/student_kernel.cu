@@ -11,7 +11,7 @@
 
 #define BM 128
 #define BN 128
-#define BK 8
+#define BK 16
 
 #define TM 8
 #define TN 8
@@ -42,13 +42,6 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
                               float *A, float *B, float beta, float *C) {
     // TODO: implement your kernel.
 
-    // 算thread負責的C矩陣座標[row][col]
-    // int row = blockIdx.y * blockDim.y + threadIdx.y;
-    // int col = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // int row = blockIdx.y * TILE_SIZE + threadIdx.y;
-    // int col = blockIdx.x * TILE_SIZE + threadIdx.x;
-
     // count thread position in the block
     int tx = threadIdx.x % (BN/TN);
     int ty = threadIdx.x / (BM/TM);
@@ -57,11 +50,7 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     int block_row = blockIdx.y * BM;
     int block_col = blockIdx.x * BN;
 
-    // // 在 shared memory 開空間存 A tile, B tile
-    // // __shared__ 表示這塊記憶體是整個 block 共用的
-    // __shared__ float sA[TILE_SIZE][TILE_SIZE];
-    // __shared__ float sB[TILE_SIZE][TILE_SIZE];
-
+    // 在 shared memory 開空間存 A tile, B tile
     //  A tile 存轉置
     __shared__ float sA[BK][BM];
     __shared__ float sB[BK][BN];
@@ -75,11 +64,6 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     int b_stride = BLOCK_THREADS / (BN/4);
 
     // // 搬 A, B 的起始位置
-    // int a_load_row = threadIdx.x / BK;
-    // int a_load_col = threadIdx.x % BK;
-    // int b_load_row = threadIdx.x / BN;
-    // int b_load_col = threadIdx.x % BN;
-
     // move A, B, 4 floats per step
     int a_load_row = threadIdx.x / (BK/4);
     int a_load_col = threadIdx.x % (BK/4);
@@ -92,14 +76,6 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     // 沿 K 方向每次處理 BK 寬的寬帶
     for(int t=0; t < CEIL_DIV(K, BK); t++){
         // // 搬 A tile 進 shared memory
-        // for(int i=0; i<BM; i+=a_stride){
-        //     int global_row = a_row_base + i;
-        //     int global_col = BK * t + a_load_col;
-        //     sA[a_load_col][a_load_row + i] = 
-        //         (global_row < M && global_col < K) 
-        //         ? A[K * global_row + global_col] : 0.0f;
-        // }
-
         int a_global_col = BK * t + a_load_col * 4;
         for(int i=0; i<BM; i+=a_stride){
             int a_global_row = a_row_base + i;
@@ -118,15 +94,6 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
         }
 
         // // 搬 B tile 進 shared memory
-        // int b_row_base = BK * t + b_load_row;
-        // for(int i=0; i<BK; i+=b_stride){
-        //     int global_row = b_row_base + i;
-        //     // int global_col = col_base;
-        //     sB[b_load_row + i][b_load_col] = 
-        //         (global_row < K && b_col_base < N) 
-        //         ? B[N * global_row + b_col_base] : 0.0f;
-        // }
-
         int b_row_base = BK * t + b_load_row;
         int b_global_col = block_col + b_load_col * 4;
         for(int i=0; i<BK; i+=b_stride){
@@ -160,19 +127,60 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
         __syncthreads();
     }
 
-    // 結果寫回 global memory
+    // // 結果寫回 global memory
+    // int c_tile_row_base = block_row + TM * ty;
+    // int c_tile_col_base = block_col + TN * tx;
+    // for(int m=0; m<TM; m++){
+    //     for(int n=0; n<TN;  n++){
+    //         int global_row = c_tile_row_base + m;
+    //         int global_col = c_tile_col_base + n;
+    //         if(global_row < M && global_col < N){
+    //             C[global_row * N + global_col] = 
+    //                 alpha * C_tile[m][n] + beta * C[global_row * N + global_col];
+    //         }
+    //     }
+    // }
+
+    // 計算該 thread 在 Global Memory 中起始的索引
     int c_tile_row_base = block_row + TM * ty;
     int c_tile_col_base = block_col + TN * tx;
-    for(int m=0; m<TM; m++){
-        for(int n=0; n<TN;  n++){
-            int global_row = c_tile_row_base + m;
-            int global_col = c_tile_col_base + n;
-            if(global_row < M && global_col < N){
-                C[global_row * N + global_col] = 
-                    alpha * C_tile[m][n] + beta * C[global_row * N + global_col];
-            }
+
+    for (int m = 0; m < TM; m++) {
+        int global_row = c_tile_row_base + m;
+        int global_col = c_tile_col_base;
+
+        // 檢查 Row 是否在邊界內 (M)
+        // 假設 N 始終是 128 的倍數，則 global_col 不會越界
+        if (global_row < M) {
+            // 定義指向 Global Memory 中 C 的 float4 指標
+            // 因為 TN=8，我們需要處理兩個 float4 (共 8 個 float)
+            float4* c_ptr = reinterpret_cast<float4*>(&C[global_row * N + global_col]);
+
+            // 1. 讀取舊的 C 值 (Vectorized Load)
+            float4 old_c1 = c_ptr[0];
+            float4 old_c2 = c_ptr[1];
+
+            // 2. 打包計算結果並套用 alpha / beta
+            // 處理前 4 個元素 (n=0~3)
+            float4 res1;
+            res1.x = alpha * C_tile[m][0] + beta * old_c1.x;
+            res1.y = alpha * C_tile[m][1] + beta * old_c1.y;
+            res1.z = alpha * C_tile[m][2] + beta * old_c1.z;
+            res1.w = alpha * C_tile[m][3] + beta * old_c1.w;
+
+            // 處理後 4 個元素 (n=4~7)
+            float4 res2;
+            res2.x = alpha * C_tile[m][4] + beta * old_c2.x;
+            res2.y = alpha * C_tile[m][5] + beta * old_c2.y;
+            res2.z = alpha * C_tile[m][6] + beta * old_c2.z;
+            res2.w = alpha * C_tile[m][7] + beta * old_c2.w;
+
+            // 3. 寫回結果 (Vectorized Store)
+            c_ptr[0] = res1;
+            c_ptr[1] = res2;
         }
-    } 
+    }    
+
 }
 
 void runStudent(int M, int N, int K, float alpha,
