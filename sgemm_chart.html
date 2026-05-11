@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGEMM Optimization Results</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@300;400;500&display=swap');
+
+  :root {
+    --bg: #0e0f14;
+    --surface: #161820;
+    --border: #2a2d3a;
+    --text: #e2e4f0;
+    --muted: #6b7191;
+    --c0: #4e9af1;
+    --c1: #5bc8af;
+    --c2: #e8b84b;
+    --c3: #f07a4a;
+    --grid: #1e2030;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 32px 24px 48px;
+  }
+
+  header {
+    margin-bottom: 28px;
+  }
+
+  header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 20px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.3px;
+  }
+
+  header p {
+    margin-top: 6px;
+    font-size: 13px;
+    color: var(--muted);
+    font-weight: 300;
+  }
+
+  /* Toggle */
+  .toggle-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .toggle-label {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    margin-right: 4px;
+  }
+
+  .toggle-btn {
+    padding: 5px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .toggle-btn.active {
+    border-color: var(--c2);
+    color: var(--c2);
+    background: rgba(232, 184, 75, 0.08);
+  }
+
+  /* Chart container */
+  .chart-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 28px 20px 20px;
+    position: relative;
+    margin-bottom: 28px;
+  }
+
+  .y-label-left {
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%) rotate(-90deg);
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+  }
+
+  .y-label-right {
+    position: absolute;
+    right: -8px;
+    top: 50%;
+    transform: translateY(-50%) rotate(90deg);
+    font-size: 11px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 360px;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    opacity: 1;
+    transition: opacity 0.15s;
+  }
+
+  .legend-item.hidden { opacity: 0.3; }
+
+  .legend-dot {
+    width: 24px;
+    height: 3px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .legend-dot.dashed {
+    background: repeating-linear-gradient(90deg, var(--dot-color) 0, var(--dot-color) 5px, transparent 5px, transparent 9px);
+    background-color: transparent;
+    height: 2px;
+  }
+
+  /* Table */
+  .table-section { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  th {
+    background: #1c1f2e;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 10px 14px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  th:first-child { text-align: left; }
+
+  td {
+    padding: 9px 14px;
+    text-align: right;
+    border-bottom: 1px solid rgba(42, 45, 58, 0.5);
+    color: var(--text);
+  }
+
+  td:first-child {
+    text-align: left;
+    color: var(--muted);
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .best { color: #5bc8af; font-weight: 600; }
+
+  /* Tooltip */
+  #tooltip {
+    position: fixed;
+    background: #1e2133;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s;
+    z-index: 100;
+    min-width: 180px;
+    line-height: 1.7;
+  }
+
+  #tooltip .tt-title { color: var(--muted); margin-bottom: 4px; font-size: 11px; }
+  #tooltip .tt-val   { color: #fff; font-weight: 600; }
+  #tooltip .tt-sub   { color: var(--muted); font-size: 11px; }
+
+  .section-title {
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>SGEMM Optimization — V100 Benchmark</h1>
+  <p>Tesla V100-SXM2-32GB · sm_70 · 50 iterations per size · C = α·(A@B) + β·C</p>
+</header>
+
+<div class="toggle-row">
+  <span class="toggle-label">metric:</span>
+  <button class="toggle-btn active" id="btn-gflops" onclick="setMetric('gflops')">GFLOPS</button>
+  <button class="toggle-btn" id="btn-time" onclick="setMetric('time')">Time (s)</button>
+  <button class="toggle-btn" id="btn-both" onclick="setMetric('both')">Both</button>
+</div>
+
+<div class="chart-wrap">
+  <span class="y-label-left" id="yl-left">GFLOPS</span>
+  <span class="y-label-right" id="yl-right" style="opacity:0">Time (s)</span>
+  <canvas id="chart"></canvas>
+  <div class="legend" id="legend"></div>
+</div>
+
+<p class="section-title" style="margin-top:8px">per-size results</p>
+<div class="table-section">
+<table id="tbl">
+  <thead></thead>
+  <tbody></tbody>
+</table>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const SIZES = [128, 256, 512, 1024, 2048, 4096];
+
+const KERNELS = [
+  {
+    label: 'K1: Naïve',
+    hint: 'hint 1 — global mem coalescing',
+    color: '#4e9af1',
+    gflops: [322.822, 1417.761, 1593.756, 1987.211, 2158.575, 2289.542],
+    time:   [0.000013, 0.000024, 0.000168, 0.001081, 0.007959, 0.060029],
+  },
+  {
+    label: 'K2: Shared mem tiling',
+    hint: 'hint 2 — shmem tiling (TILE=32)',
+    color: '#5bc8af',
+    gflops: [444.583, 1987.294, 2767.860, 3466.833, 3883.489, 4146.561],
+    time:   [0.000009, 0.000017, 0.000097, 0.000619, 0.004424, 0.033145],
+  },
+  {
+    label: 'K3: 2D blocktiling',
+    hint: 'hint 3+4 — 2D thread tile + register cache',
+    color: '#e8b84b',
+    gflops: [84.952, 407.464, 1808.896, 6705.295, 9211.162, 11105.664],
+    time:   [0.000049, 0.000082, 0.000148, 0.000320, 0.001865, 0.012376],
+  },
+  {
+    label: 'K4: float4 + DB',
+    hint: 'hint 5+6+7 — bank-free, float4, double buffering',
+    color: '#f07a4a',
+    gflops: [118.850, 528.276, 2235.103, 8868.552, 9226.165, 13149.214],
+    time:   [0.000035, 0.000064, 0.000120, 0.000242, 0.001862, 0.010452],
+  },
+];
+
+const TIERS = [
+  { label: 'T2 ≥2050', val: 2050, color: '#2a3a5c' },
+  { label: 'T3 ≥3700', val: 3700, color: '#2a4535' },
+  { label: 'T4 ≥7600', val: 7600, color: '#3d3a22' },
+  { label: 'T5 ≥9500', val: 9500, color: '#3d2e1e' },
+];
+
+let metric = 'gflops';
+let hidden = {};
+
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+let DPR = window.devicePixelRatio || 1;
+
+function setMetric(m) {
+  metric = m;
+  ['gflops','time','both'].forEach(k => {
+    document.getElementById('btn-'+k).classList.toggle('active', k===m);
+  });
+  document.getElementById('yl-left').textContent  = m==='time' ? 'Time (s)' : 'GFLOPS';
+  document.getElementById('yl-right').style.opacity = m==='both' ? 1 : 0;
+  draw();
+}
+
+function buildLegend() {
+  const el = document.getElementById('legend');
+  el.innerHTML = '';
+  KERNELS.forEach((k, i) => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.id = 'leg-' + i;
+    item.innerHTML = `
+      <div class="legend-dot" style="background:${k.color}"></div>
+      <span>${k.label}</span>
+      <span style="color:var(--muted);font-size:11px;font-family:'JetBrains Mono',monospace"> — ${k.hint}</span>
+    `;
+    item.onclick = () => {
+      hidden[i] = !hidden[i];
+      item.classList.toggle('hidden', !!hidden[i]);
+      draw();
+    };
+    el.appendChild(item);
+  });
+}
+
+function buildTable() {
+  const thead = document.querySelector('#tbl thead');
+  const tbody = document.querySelector('#tbl tbody');
+  thead.innerHTML = '<tr><th>Kernel</th>' + SIZES.map(s=>`<th>${s}</th>`).join('') + '</tr>';
+  tbody.innerHTML = '';
+  KERNELS.forEach((k, ki) => {
+    const tr = document.createElement('tr');
+    const maxGflops = Math.max(...k.gflops);
+    const cells = SIZES.map((s, si) => {
+      const v = k.gflops[si];
+      const isBest = v === Math.max(...KERNELS.map(k2=>k2.gflops[si]));
+      return `<td class="${isBest?'best':''}">${v.toFixed(0)}</td>`;
+    });
+    tr.innerHTML = `<td style="color:${k.color}">${k.label}</td>` + cells.join('');
+    tbody.appendChild(tr);
+  });
+}
+
+function resize() {
+  const w = canvas.parentElement.clientWidth - 40;
+  const h = 360;
+  DPR = window.devicePixelRatio || 1;
+  canvas.width  = w * DPR;
+  canvas.height = h * DPR;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.scale(DPR, DPR);
+  draw();
+}
+
+function pad(str, len) {
+  return String(str).padStart(len, ' ');
+}
+
+function draw() {
+  const W = canvas.width / DPR;
+  const H = canvas.height / DPR;
+  const ml = 60, mr = metric==='both' ? 60 : 20, mt = 24, mb = 40;
+  const cw = W - ml - mr, ch = H - mt - mb;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // axis background
+  ctx.fillStyle = '#0e0f14';
+  ctx.fillRect(0, 0, W, H);
+
+  // ── compute scales ──
+  const visKernels = KERNELS.filter((_,i) => !hidden[i]);
+
+  let maxG = 0, maxT = 0;
+  KERNELS.forEach((k, i) => {
+    if (hidden[i]) return;
+    k.gflops.forEach(v => { if(v>maxG) maxG=v; });
+    k.time.forEach(v => { if(v>maxT) maxT=v; });
+  });
+  maxG = maxG * 1.12 || 14000;
+  maxT = maxT * 1.12 || 0.07;
+
+  const xOf = i => ml + (i / (SIZES.length-1)) * cw;
+  const yOfG = v => mt + ch - (v / maxG) * ch;
+  const yOfT = v => mt + ch - (v / maxT) * ch;
+
+  // ── grid lines (GFLOPS) ──
+  ctx.strokeStyle = '#1e2030';
+  ctx.lineWidth = 1;
+  const gridCount = 5;
+  ctx.font = '10px JetBrains Mono, monospace';
+  for (let i=0; i<=gridCount; i++) {
+    const v = (maxG / gridCount) * i;
+    const y = yOfG(v);
+    ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(ml+cw, y); ctx.stroke();
+    ctx.fillStyle = '#6b7191';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(v).toLocaleString(), ml-6, y+3);
+  }
+
+  // right axis ticks (time)
+  if (metric === 'both') {
+    for (let i=0; i<=gridCount; i++) {
+      const v = (maxT / gridCount) * i;
+      const y = yOfT(v);
+      ctx.fillStyle = '#6b7191';
+      ctx.textAlign = 'left';
+      ctx.fillText(v.toFixed(3), ml+cw+6, y+3);
+    }
+  }
+
+  // tier lines (GFLOPS)
+  if (metric !== 'time') {
+    TIERS.forEach(tier => {
+      const y = yOfG(tier.val);
+      if (y < mt || y > mt+ch) return;
+      ctx.fillStyle = tier.color;
+      ctx.fillRect(ml, y, cw, mt+ch-y < 0 ? 0 : Math.min(mt+ch-y, ch));
+      ctx.strokeStyle = tier.color.replace('2a','44').replace('3d','55');
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(ml+cw, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#8888aa';
+      ctx.textAlign = 'left';
+      ctx.font = '10px JetBrains Mono, monospace';
+      ctx.fillText(tier.label, ml+4, y-3);
+    });
+  }
+
+  // x axis
+  ctx.strokeStyle = '#2a2d3a';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(ml, mt+ch); ctx.lineTo(ml+cw, mt+ch); ctx.stroke();
+
+  SIZES.forEach((s, i) => {
+    const x = xOf(i);
+    ctx.strokeStyle = '#2a2d3a';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, mt+ch); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#6b7191';
+    ctx.textAlign = 'center';
+    ctx.font = '11px JetBrains Mono, monospace';
+    ctx.fillText(s, x, mt+ch+16);
+  });
+
+  // x label
+  ctx.fillStyle = '#6b7191';
+  ctx.textAlign = 'center';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('Matrix size (M = N = K)', ml + cw/2, mt+ch+32);
+
+  // ── draw lines ──
+  KERNELS.forEach((k, ki) => {
+    if (hidden[ki]) return;
+
+    // GFLOPS line (solid) or time line (dashed)
+    const drawLine = (vals, yOf, dash) => {
+      ctx.strokeStyle = k.color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      vals.forEach((v, i) => {
+        const x = xOf(i), y = yOf(v);
+        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // dots
+      vals.forEach((v, i) => {
+        const x = xOf(i), y = yOf(v);
+        ctx.fillStyle = k.color;
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle = '#0e0f14';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.stroke();
+      });
+    };
+
+    if (metric === 'gflops') drawLine(k.gflops, yOfG);
+    else if (metric === 'time') drawLine(k.time, yOfT);
+    else {
+      drawLine(k.gflops, yOfG);
+      drawLine(k.time, yOfT, [5,4]);
+    }
+  });
+}
+
+// ── Tooltip ──
+const tooltip = document.getElementById('tooltip');
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const W = rect.width;
+  const ml = 60, mr = metric==='both' ? 60 : 20;
+  const cw = W - ml - mr;
+
+  let closest = -1, minDist = 30;
+  SIZES.forEach((s, i) => {
+    const x = ml + (i/(SIZES.length-1))*cw;
+    const d = Math.abs(mx - x);
+    if (d < minDist) { minDist = d; closest = i; }
+  });
+
+  if (closest === -1) { tooltip.style.opacity = 0; return; }
+
+  const size = SIZES[closest];
+  let html = `<div class="tt-title">size = ${size}</div>`;
+  KERNELS.forEach((k, ki) => {
+    if (hidden[ki]) return;
+    const g = k.gflops[closest];
+    const t = k.time[closest];
+    html += `<div style="color:${k.color};margin-top:4px">
+      <span style="font-weight:600">${k.label}</span><br>
+      <span style="color:#aaa">${g.toFixed(0)} GFLOPS · ${t.toFixed(6)}s</span>
+    </div>`;
+  });
+  tooltip.innerHTML = html;
+  tooltip.style.opacity = 1;
+  tooltip.style.left = (e.clientX + 14) + 'px';
+  tooltip.style.top  = (e.clientY - 10) + 'px';
+});
+
+canvas.addEventListener('mouseleave', () => { tooltip.style.opacity = 0; });
+
+buildLegend();
+buildTable();
+resize();
+window.addEventListener('resize', () => { ctx.resetTransform(); ctx.scale(1,1); resize(); });
+</script>
+</body>
+</html>

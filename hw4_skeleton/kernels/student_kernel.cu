@@ -17,10 +17,6 @@
 #define TN 8
 
 #define BLOCK_THREADS ((BM/TM) * (BN/TN))
-
-// #define NAIVE_BLOCK 32
-// #define TILE_SIZE 32
-
 // =============================================================================
 // HW4: CUDA Matmul Optimization
 //
@@ -44,7 +40,7 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
 
     // count thread position in the block
     int tx = threadIdx.x % (BN/TN);
-    int ty = threadIdx.x / (BM/TM);
+    int ty = threadIdx.x / (BN/TN);
 
     // 這個 block 負責的 C 區塊左上角位置
     int block_row = blockIdx.y * BM;
@@ -58,36 +54,41 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     float C_tile[TM][TN] = {0.0f};
     float regA[TM];
     float regB[TN];
-    
+
+    // 載入索引計算
+    int a_stride = BLOCK_THREADS / (BK/4);
+    int b_stride = BLOCK_THREADS / (BN/4);
+    int a_load_row = threadIdx.x / (BK/4) % a_stride;
+    int a_load_col = threadIdx.x % (BK/4) * 4;
+    int b_load_row = threadIdx.x / (BN/4) % b_stride;
+    int b_load_col = threadIdx.x % (BN/4) * 4;
+
     // 用於 Double Buffering 中轉數據的暫存器
+    // LDG: load data global
+    // 在 NVIDIA GPU 的彙編語言（SASS）中，
+    // LDG 是從 Global Memory（全域記憶體）讀取數據到 Registers（暫存器）的標準指令名稱。
     float4 ldgA[BM / (BLOCK_THREADS / (BK/4))]; 
     float4 ldgB[BK / (BLOCK_THREADS / (BN/4))];
 
-    // 載入索引計算
-    int a_load_row = threadIdx.x / (BK/4);
-    int a_load_col = threadIdx.x % (BK/4);
-    int b_load_row = threadIdx.x / (BN/4);
-    int b_load_col = threadIdx.x % (BN/4);
-    int a_stride = BLOCK_THREADS / (BK/4);
-    int b_stride = BLOCK_THREADS / (BN/4);
-
     // --- [Prolog] 預載入第 0 個 Tile ---
+    //  t = 0
     // 搬運 A
+    #pragma unroll
     for(int i=0; i<BM; i+=a_stride) {
-        int gr = block_row + a_load_row + i;
-        int gc = a_load_col * 4; // t=0
-        float4 tmp = (gr < M && gc + 3 < K) ? *reinterpret_cast<float4*>(&A[gr * K + gc]) : make_float4(0,0,0,0);
-        sA[0][a_load_col*4 + 0][a_load_row + i] = tmp.x;
-        sA[0][a_load_col*4 + 1][a_load_row + i] = tmp.y;
-        sA[0][a_load_col*4 + 2][a_load_row + i] = tmp.z;
-        sA[0][a_load_col*4 + 3][a_load_row + i] = tmp.w;
+        int global_row = block_row + a_load_row + i;
+        float4 tmp = (global_row < M && a_load_col + 3 < K) ? *reinterpret_cast<float4*>(&A[global_row * K + a_load_col]) : make_float4(0,0,0,0);
+        sA[0][a_load_col + 0][a_load_row + i] = tmp.x;
+        sA[0][a_load_col + 1][a_load_row + i] = tmp.y;
+        sA[0][a_load_col + 2][a_load_row + i] = tmp.z;
+        sA[0][a_load_col + 3][a_load_row + i] = tmp.w;
     }
     // 搬運 B
+    #pragma unroll
     for(int i=0; i<BK; i+=b_stride) {
-        int gr = b_load_row + i; // t=0
-        int gc = block_col + b_load_col * 4;
-        *reinterpret_cast<float4*>(&sB[0][b_load_row + i][b_load_col * 4]) = 
-            (gr < K && gc + 3 < N) ? *reinterpret_cast<float4*>(&B[gr * N + gc]) : make_float4(0,0,0,0);
+        int global_row = b_load_row + i;
+        int global_col = block_col + b_load_col;
+        *reinterpret_cast<float4*>(&sB[0][global_row][b_load_col]) = 
+            (global_row < K && global_col + 3 < N) ? *reinterpret_cast<float4*>(&B[global_row * N + global_col]) : make_float4(0,0,0,0);
     }
     __syncthreads();
 
@@ -98,14 +99,14 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
 
         // Step A: 先把下一個 Tile (t) 讀到暫存器 (隱藏延遲)
         for(int i=0; i<BM; i+=a_stride) {
-            int gr = block_row + a_load_row + i;
-            int gc = BK * t + a_load_col * 4;
-            ldgA[i/a_stride] = (gr < M && gc + 3 < K) ? *reinterpret_cast<float4*>(&A[gr * K + gc]) : make_float4(0,0,0,0);
+            int global_row = block_row + a_load_row + i;
+            int global_col = BK * t + a_load_col;
+            ldgA[i/a_stride] = (global_row < M && global_col + 3 < K) ? *reinterpret_cast<float4*>(&A[global_row * K + global_col]) : make_float4(0,0,0,0);
         }
         for(int i=0; i<BK; i+=b_stride) {
-            int gr = BK * t + b_load_row + i;
-            int gc = block_col + b_load_col * 4;
-            ldgB[i/b_stride] = (gr < K && gc + 3 < N) ? *reinterpret_cast<float4*>(&B[gr * N + gc]) : make_float4(0,0,0,0);
+            int global_row = BK * t + b_load_row + i;
+            int global_col = block_col + b_load_col;
+            ldgB[i/b_stride] = (global_row < K && global_col + 3 < N) ? *reinterpret_cast<float4*>(&B[global_row * N + global_col]) : make_float4(0,0,0,0);
         }
 
         // Step B: 計算當前緩衝區 (read_idx) 的數據
@@ -126,13 +127,13 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
         // Step C: 將暫存器中的數據寫入下一個緩衝區 (write_idx)
         for(int i=0; i<BM; i+=a_stride) {
             float4 tmp = ldgA[i/a_stride];
-            sA[write_idx][a_load_col*4+0][a_load_row+i] = tmp.x;
-            sA[write_idx][a_load_col*4+1][a_load_row+i] = tmp.y;
-            sA[write_idx][a_load_col*4+2][a_load_row+i] = tmp.z;
-            sA[write_idx][a_load_col*4+3][a_load_row+i] = tmp.w;
+            sA[write_idx][a_load_col+0][a_load_row+i] = tmp.x;
+            sA[write_idx][a_load_col+1][a_load_row+i] = tmp.y;
+            sA[write_idx][a_load_col+2][a_load_row+i] = tmp.z;
+            sA[write_idx][a_load_col+3][a_load_row+i] = tmp.w;
         }
         for(int i=0; i<BK; i+=b_stride) {
-            *reinterpret_cast<float4*>(&sB[write_idx][b_load_row+i][b_load_col*4]) = ldgB[i/b_stride];
+            *reinterpret_cast<float4*>(&sB[write_idx][b_load_row+i][b_load_col]) = ldgB[i/b_stride];
         }
         __syncthreads();
     }

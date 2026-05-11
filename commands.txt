@@ -1,0 +1,53 @@
+
+ssh twcc
+
+!evachen405022
+
+source ./myenv/bin/activate
+
+python3 -m pip install --upgrade pip
+python3 -m pip install pandas matplotlib
+
+module load cuda
+make 
+
+srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
+
+
+hint 1 #include "naive_kernel.cu"
+make clean && make && srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
+
+
+hint 2 #include "shared_memory_tiling.cu"
+make clean && make && srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
+
+
+hint 3+4 #include "2d_thread_bloacktiling_register_cahcing.cu"
+make clean && make && srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
+
+
+hint 5+6+7 #include "student_kernel.cu"
+make clean && make && srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 1 ./main
+
+
+scp -r -o MACs=hmac-sha2-256 r14922112@ln01.twcc.ai:~/hw4_skeleton/ .
+
+
+
+# 使用 rsync 排除 myenv 目錄
+rsync -avz --exclude='myenv' -e "ssh -o MACs=hmac-sha2-256" r14922112@ln01.twcc.ai:~/hw4_skeleton/ .
+
+
+
+BM,BN,BK,TM,TN,GFLOPS
+128,128,16,8,8
+
+Using device: Tesla V100-SXM2-32GB
+Max size: 4096
+Selected kernel: 1
+Running size: 128...    avg time: 0.000035s, performance: 118.373 GFLOPS
+Running size: 256...    avg time: 0.000064s, performance: 523.712 GFLOPS
+Running size: 512...    avg time: 0.000121s, performance: 2215.832 GFLOPS
+Running size: 1024...   avg time: 0.000243s, performance: 8847.763 GFLOPS
+Running size: 2048...   avg time: 0.001781s, performance: 9646.659 GFLOPS
+Running size: 4096...   avg time: 0.010710s, performance: 12832.212 GFLOPS
