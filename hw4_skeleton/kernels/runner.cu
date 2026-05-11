@@ -3,8 +3,6 @@
 using namespace std;
 
 #include "0_cublas.cu"
-#include "shared_memory_tiling.cu"
- // #include "old"
 
 // // hint 1
 // #include "naive_kernel.cu"
@@ -16,7 +14,7 @@ using namespace std;
 // #include "2d_thread_bloacktiling_register_cahcing.cu"
 
 // hint 5+6+7
- // #include "old"
+#include "student_kernel.cu"
 
 void run_kernel(int kernel_num, int M, int N, int K, float alpha,
                 float* A, float* B, float beta, float* C,

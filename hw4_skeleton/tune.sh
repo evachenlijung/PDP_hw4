@@ -1,86 +1,127 @@
 #!/bin/bash
+# tune.sh — sweep BM/BN/BK/TM/TN combinations and report top 5 GFLOPS at size=4096
 
-# --- 1. 配置搜尋空間 ---
-BM_LIST=(128)
-BN_LIST=(128)
-BK_LIST=(8 16 32)
-THREAD_TILES=("8,8" "8,4" "4,8" "4,4") 
+PROJECT="ACD115083"
+SRC="kernels/student_kernel.cu"
+RESULTS_CSV="tune_results.csv"
+TOP_TXT="tune_top5.txt"
 
-OUTPUT_FILE="tuning_results.csv"
-# 寫入標題列
-echo "BM,BN,BK,TM,TN,GFLOPS" > $OUTPUT_FILE
+if [ ! -f "$SRC" ]; then
+    echo "ERROR: $SRC not found. Run from hw4_skeleton/ root."
+    exit 1
+fi
 
-# 定義檔案路徑
-ORIGINAL_KERNEL="kernels/student_kernel.cu"
-TEMP_KERNEL="kernels/student_kernel_temp.cu"
+if ! grep -q "ifndef BM" "$SRC"; then
+    echo "ERROR: $SRC needs #ifndef guards around BM/BN/BK/TM/TN macros."
+    echo "Wrap each macro like this:"
+    echo "    #ifndef BM"
+    echo "    #define BM 128"
+    echo "    #endif"
+    exit 1
+fi
 
-echo "開始參數掃描（已保護原始檔案）..."
+# Candidate combinations: BM BN BK TM TN
+CANDIDATES=(
+    "128 128  8 8 8"
+    "128 128 16 8 8"
+    "128 128 16 4 8"
+    "64  64  16 8 8"
+    "64  128 16 4 8"
+    "64  64   8 8 8"
+)
 
-for BM in "${BM_LIST[@]}"; do
-    for BN in "${BN_LIST[@]}"; do
-        for BK in "${BK_LIST[@]}"; do
-            for T_TILE in "${THREAD_TILES[@]}"; do
-                TM=$(echo $T_TILE | cut -d',' -f1)
-                TN=$(echo $T_TILE | cut -d',' -f2)
-                
-                # 計算 Block 內的執行緒總數
-                BT=$(( (BM / TM) * (BN / TN) ))
-                
-                # 硬體限制檢查：V100 單個 Block 執行緒上限為 1024 [cite: 22, 24]
-                if [ $BT -lt 32 ] || [ $BT -gt 1024 ]; then continue; fi
+echo "BM,BN,BK,TM,TN,threads,shmem_kb,gflops_4096,status" > "$RESULTS_CSV"
 
-                echo -n "測試: BM=$BM, BN=$BN, BK=$BK, TM=$TM, TN=$TN ($BT threads)... "
+echo "================================================================"
+echo "  SGEMM autotuner — ${#CANDIDATES[@]} combinations"
+echo "================================================================"
+printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s %s\n" \
+       "BM" "BN" "BK" "TM" "TN" "thrds" "shmem" "GFLOPS" "status"
+echo "----------------------------------------------------------------"
 
-                # 關鍵防護：複製原始碼到臨時檔案，不更動原檔
-                cp $ORIGINAL_KERNEL $TEMP_KERNEL
-                
-                # 修改臨時檔案中的參數
-                sed -i "s/#define BM [0-9]*/#define BM $BM/" $TEMP_KERNEL
-                sed -i "s/#define BN [0-9]*/#define BN $BN/" $TEMP_KERNEL
-                sed -i "s/#define BK [0-9]*/#define BK $BK/" $TEMP_KERNEL
-                sed -i "s/#define TM [0-9]*/#define TM $TM/" $TEMP_KERNEL
-                sed -i "s/#define TN [0-9]*/#define TN $TN/" $TEMP_KERNEL
+for combo in "${CANDIDATES[@]}"; do
+    set -- $combo
+    BM=$1; BN=$2; BK=$3; TM=$4; TN=$5
 
-                # 暫時將原檔更名，讓副本頂替進行編譯
-                mv $ORIGINAL_KERNEL ${ORIGINAL_KERNEL}.safe_bak
-                mv $TEMP_KERNEL $ORIGINAL_KERNEL
+    threads=$(( (BM/TM) * (BN/TN) ))
+    shmem=$(( 2*(BM*BK + BK*BN)*4 ))
+    shmem_kb=$(( shmem/1024 ))
 
-                # 編譯與執行 [cite: 38, 39, 42]
-                make clean > /dev/null 2>&1
-                make > /dev/null 2>&1
-                COMPILE_STATUS=$?
+    # Constraint checks
+    skip=""
+    [ $threads -gt 1024 ] && skip="thrds>1024"
+    [ $((threads % 32)) -ne 0 ] && skip="thrds%32"
+    [ $shmem -gt 49152 ] && skip="shmem>48KB"
+    [ $((BK % 4)) -ne 0 ] && skip="BK%4"
+    [ $((BN % 4)) -ne 0 ] && skip="BN%4"
+    [ $(( (BM*BK/4) % threads )) -ne 0 ] && skip="a_unbal"
+    [ $(( (BK*BN/4) % threads )) -ne 0 ] && skip="b_unbal"
 
-                if [ $COMPILE_STATUS -eq 0 ]; then
-                    # 擷取 4096 尺寸的效能數值 [cite: 51]
-                    # 使用 sed 確保精確擷取 performance: 之後的數字
-                    RESULT=$(srun -N 1 -n 1 --gpus-per-node 1 -A ACD115083 -t 5 ./main 2>/dev/null | \
-                             grep "size: 4096" | \
-                             sed -n 's/.*performance: \([0-9.]*\) GFLOPS.*/\1/p')
-                    
-                    if [ -z "$RESULT" ]; then
-                        echo "執行失敗（可能超時或記憶體錯誤）"
-                    else
-                        echo "$RESULT GFLOPS"
-                        echo "$BM,$BN,$BK,$TM,$TN,$RESULT" >> $OUTPUT_FILE
-                    fi
-                else
-                    echo "編譯失敗（可能資源超出限制）"
-                fi
+    if [ -n "$skip" ]; then
+        printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s SKIP:%s\n" \
+            "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "-" "$skip"
+        echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,0,SKIP_$skip" >> "$RESULTS_CSV"
+        continue
+    fi
 
-                # 核心防護：編譯後立即還原原始檔案
-                mv $ORIGINAL_KERNEL $TEMP_KERNEL
-                mv ${ORIGINAL_KERNEL}.safe_bak $ORIGINAL_KERNEL
-                rm -f $TEMP_KERNEL
-            done
-        done
-    done
+    # Build
+    rm -f main
+    nvcc -O3 -std=c++14 -gencode=arch=compute_70,code=sm_70 \
+         -DBM=$BM -DBN=$BN -DBK=$BK -DTM=$TM -DTN=$TN \
+         main.cu -o main -lcublas > /tmp/tune_build.log 2>&1
+
+    if [ ! -f main ]; then
+        printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s BUILD_FAIL\n" \
+            "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "-"
+        echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,0,BUILD_FAIL" >> "$RESULTS_CSV"
+        continue
+    fi
+
+    # Run
+    out=$(srun -N 1 -n 1 --gpus-per-node 1 -A "$PROJECT" -t 2 ./main 2>&1)
+
+    if echo "$out" | grep -q "verification failed"; then
+        printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s VERIFY_FAIL\n" \
+            "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "-"
+        echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,0,VERIFY_FAIL" >> "$RESULTS_CSV"
+        continue
+    fi
+
+    if echo "$out" | grep -qE "CUDA error|illegal memory|exit code 1"; then
+        printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s RUNTIME_ERR\n" \
+            "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "-"
+        echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,0,RUNTIME_ERR" >> "$RESULTS_CSV"
+        continue
+    fi
+
+    # Parse GFLOPS at size 4096
+    gflops=$(echo "$out" | grep "Running size: 4096" | grep -oE "performance: *[0-9.]+" | grep -oE "[0-9.]+")
+
+    if [ -z "$gflops" ]; then
+        printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s NO_OUTPUT\n" \
+            "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "-"
+        echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,0,NO_OUTPUT" >> "$RESULTS_CSV"
+        continue
+    fi
+
+    printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %-10s OK\n" \
+        "$BM" "$BN" "$BK" "$TM" "$TN" "$threads" "${shmem_kb}KB" "$gflops"
+    echo "$BM,$BN,$BK,$TM,$TN,$threads,$shmem_kb,$gflops,OK" >> "$RESULTS_CSV"
 done
 
-# --- 2. 彙整結果並排序 ---
+echo "----------------------------------------------------------------"
 echo ""
-echo "--------------------------------------------------"
-echo "掃描完成！效能前五強參數組合 (GFLOPS):"
-echo "BM,BN,BK,TM,TN | GFLOPS"
-# 跳過 CSV 第一行標題，按第 6 欄位（GFLOPS）由大到小排序
-tail -n +2 $OUTPUT_FILE | sort -t, -k6 -nr | head -n 5
-echo "--------------------------------------------------"
+echo "================================================================"
+echo "  TOP 5 by GFLOPS at size=4096"
+echo "================================================================"
+printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-7s | %s\n" \
+    "BM" "BN" "BK" "TM" "TN" "thrds" "shmem" "GFLOPS"
+echo "----------------------------------------------------------------"
+{
+tail -n +2 "$RESULTS_CSV" | awk -F',' '$9=="OK"' | sort -t',' -k8 -g -r | head -5 | \
+    awk -F',' '{ printf "%-4s %-4s %-3s %-3s %-3s | %-6s %-5sKB | %s\n", $1,$2,$3,$4,$5,$6,$7,$8 }'
+} | tee "$TOP_TXT"
+
+echo ""
+echo "Full log: $RESULTS_CSV"
+echo "Top 5:    $TOP_TXT"

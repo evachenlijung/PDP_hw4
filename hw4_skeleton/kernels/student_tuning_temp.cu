@@ -9,28 +9,12 @@
 // N: C column 數
 // K: A column 數 & B row 數
 
-// #define BM 128
-// #define BN 128
-// #define BK 16
-
-// #define TM 8
-// #define TN 8
-
-#ifndef BM
 #define BM 128
-#endif
-#ifndef BN
 #define BN 128
-#endif
-#ifndef BK
-#define BK 16
-#endif
-#ifndef TM
+#define BK 32
+
 #define TM 8
-#endif
-#ifndef TN
-#define TN 8
-#endif
+#define TN 4
 
 #define BLOCK_THREADS ((BM/TM) * (BN/TN))
 // =============================================================================

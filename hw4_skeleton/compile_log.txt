@@ -1,0 +1,2 @@
+nvcc -O3 -std=c++14 -gencode=arch=compute_70,code=sm_70 main.cu -o main -lcublas
+nvcc warning : Support for offline compilation for architectures prior to '<compute/sm/lto>_75' will be removed in a future release (Use -Wno-deprecated-gpu-targets to suppress warning).
