@@ -25,7 +25,7 @@ __global__ void StudentKernel(int M, int N, int K, float alpha,
     int block_col = blockIdx.x * BN;
 
     // ── Shared memory ──
-    __shared__ float As[BK][BM];  // A tile 轉置存，方便後面讀取
+    __shared__ float As[BK][BM+1];  // A tile 轉置存，方便後面讀取
     __shared__ float Bs[BK][BN];  // B tile 正常存
 
     // ── Register：這個 thread 的計算結果暫存 ──
